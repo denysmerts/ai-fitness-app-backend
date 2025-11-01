@@ -5,7 +5,7 @@ import pandas as pd
 import joblib
 import os
 import numpy as np
-from pyngrok import ngrok
+
 
 app = Flask(__name__)
 
@@ -83,5 +83,5 @@ def debug_features():
 # =========================
 # Run Flask locally
 # =========================
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+if __name__ == '__main__':
+    app.run()
