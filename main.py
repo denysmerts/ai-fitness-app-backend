@@ -1,103 +1,110 @@
-from flask import Flask, request, jsonify
-from flask_cors import CORS
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 import lightgbm as lgb
 import pandas as pd
+import numpy as np
 import joblib
 import os
-import numpy as np
 
-
-import os
-os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["OPENBLAS_NUM_THREADS"] = "1"
-os.environ["MKL_NUM_THREADS"] = "1"
-os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
-os.environ["NUMEXPR_NUM_THREADS"] = "1"
-os.environ["KMP_AFFINITY"] = "noverbose"
-os.environ["KMP_SETTINGS"] = "0"
-
-
-app = Flask(__name__)
-
-# ✅ Allow both local frontend & deployed frontend
-CORS(app, resources={r"/*": {"origins": ["http://localhost:5173", "https://ai-fitness-app-backend-3.onrender.com"]}})
-
-# =========================
-# Metadata only — no model loading yet!
-# =========================
+# ---- Config ----
 MODEL_DIR = "gym_ai_models"
-target_columns = ["exercises", "equipment", "diet", "recommendation"]
+TARGETS = ["exercises", "equipment", "diet", "recommendation"]
 
-input_features = joblib.load(os.path.join(MODEL_DIR, "input_features.pkl"))
-category_mappings = joblib.load(os.path.join(MODEL_DIR, "category_mappings.pkl"))
+# ---- App ----
+app = FastAPI(title="AI Fitness API", version="1.0.0")
 
-# lazy model storage
-models = {}
+# CORS: allow local dev and any deployed frontends you use
+ALLOWED_ORIGINS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    # add your deployed frontend origins here (Netlify/Vercel/etc.)
+    # "https://your-frontend.example.com"
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS + ["*"],  # keep "*" while debugging; tighten later
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-def get_model(target):
-    if target not in models:
+# ---- Load metadata at startup (small, fast) ----
+input_features_path = os.path.join(MODEL_DIR, "input_features.pkl")
+category_mappings_path = os.path.join(MODEL_DIR, "category_mappings.pkl")
+
+if not os.path.exists(input_features_path) or not os.path.exists(category_mappings_path):
+    raise RuntimeError("Missing metadata files in gym_ai_models/: input_features.pkl or category_mappings.pkl")
+
+input_features = joblib.load(input_features_path)
+category_mappings = joblib.load(category_mappings_path)
+
+# ---- Lazy model registry ----
+_models: dict[str, lgb.Booster] = {}
+
+def get_model(target: str) -> lgb.Booster:
+    if target not in _models:
         model_path = os.path.join(MODEL_DIR, f"{target}_model.txt")
-        model = lgb.Booster(model_file=model_path)
-        model.reset_parameter({"num_threads": 1})
-        models[target] = model
+        if not os.path.exists(model_path):
+            raise RuntimeError(f"Missing model file: {model_path}")
+        booster = lgb.Booster(model_file=model_path)
+        # reduce thread usage on small CPU instances
+        booster.reset_parameter({"num_threads": 1})
+        _models[target] = booster
         print(f"✅ Loaded model for {target}")
-    return models[target]
+    return _models[target]
 
+def decode_prediction(pred: int, target: str) -> str:
+    return category_mappings[target].get(pred, "Unknown")
 
-# =========================
-# Helper Functions
-# =========================
-def decode_prediction(pred, target_column):
-    return category_mappings[target_column].get(pred, "Unknown")
+def generate_recommendations(user_data: dict) -> dict:
+    # Ensure all expected features exist; fill unknowns with 0
+    df = pd.DataFrame([user_data])
+    df = df.reindex(columns=input_features, fill_value=0)
 
-
-def generate_recommendations(user_data):
-    user_df = pd.DataFrame([user_data])
-    user_df = user_df.reindex(columns=input_features, fill_value=0)
-
-    recommendations = {}
-    for target in target_columns:
+    out = {}
+    for target in TARGETS:
         model = get_model(target)
-        pred_prob = model.predict(user_df)
+        proba = model.predict(df)
 
-        if model.params.get('objective') == 'binary':
-            pred = int(pred_prob > 0.5)
+        # binary vs multiclass handling
+        if model.params.get("objective") == "binary":
+            pred_idx = int(proba > 0.5)
         else:
-            pred = int(np.argmax(pred_prob, axis=1)[0])
+            pred_idx = int(np.argmax(proba, axis=1)[0])
 
-        recommendations[target] = decode_prediction(pred, target)
+        out[target] = decode_prediction(pred_idx, target)
+    return out
 
-    return recommendations
+# ---- Schemas ----
+class PredictIn(BaseModel):
+    sex: str | None = None
+    age: int | float | None = None
+    height: int | float | None = None
+    weight: int | float | None = None
+    hypertension: str | int | None = None
+    diabetes: str | int | None = None
+    fitness_goal: str | None = None
+    fitness_type: str | None = None
 
+# ---- Routes ----
+@app.get("/")
+def root():
+    return {"message": "AI Fitness API is running!"}
 
-# =========================
-# Flask Routes
-# =========================
-@app.route('/')
-def home():
-    return jsonify({"message": "AI Fitness API is running!"})
-
-
-@app.route('/predict', methods=['POST'])
-def predict():
-    try:
-        user_data = request.get_json()
-        predictions = generate_recommendations(user_data)
-        return jsonify({"success": True, "predictions": predictions})
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)})
-
-
-# ✅ Debug route to inspect feature requirements
-@app.route('/debug/features', methods=['GET'])
+@app.get("/debug/features")
 def debug_features():
-    return jsonify({"input_features": input_features})
+    return {"input_features": input_features}
 
+@app.post("/predict")
+async def predict(body: PredictIn):
+    try:
+        # Convert to dict; keep keys as your training pipeline expects
+        user_data = {k: v for k, v in body.dict().items() if v is not None}
+        if not user_data:
+            raise HTTPException(status_code=400, detail="Empty payload")
 
-# =========================
-# Run Flask locally (Render overrides port)
-# =========================
-if __name__ == "__main__":
-    import os
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
+        preds = generate_recommendations(user_data)
+        return {"success": True, "predictions": preds}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
