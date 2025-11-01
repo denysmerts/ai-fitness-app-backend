@@ -6,6 +6,17 @@ import joblib
 import os
 import numpy as np
 
+
+import os
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+os.environ["KMP_AFFINITY"] = "noverbose"
+os.environ["KMP_SETTINGS"] = "0"
+
+
 app = Flask(__name__)
 
 # ✅ Allow both local frontend & deployed frontend
