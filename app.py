@@ -11,9 +11,9 @@ from pyngrok import ngrok
 app = Flask(__name__)
 CORS(app)
 
-# =========================
+
 # Load Models & Metadata
-# =========================
+
 MODEL_DIR = "gym_ai_models"
 target_columns = ["exercises", "equipment", "diet", "recommendation"]
 
@@ -22,16 +22,14 @@ models = {}
 for target in target_columns:
     model_path = os.path.join(MODEL_DIR, f"{target}_model.txt")
     models[target] = lgb.Booster(model_file=model_path)
-    print(f"✅ Loaded model for {target}")
+    print(f" Loaded model for {target}")
 
 # Load input features and category mappings
 input_features = joblib.load(os.path.join(MODEL_DIR, "input_features.pkl"))
 category_mappings = joblib.load(os.path.join(MODEL_DIR, "category_mappings.pkl"))
-print("✅ Loaded input features and category mappings")
+print(" Loaded input features and category mappings")
 
-# =========================
 # Helper Functions
-# =========================
 def decode_prediction(pred, target_column):
     """Convert numerical prediction back to original category label."""
     return category_mappings[target_column].get(pred, "Unknown") if target_column in category_mappings else pred
@@ -52,9 +50,9 @@ def generate_recommendations(user_data):
         recommendations[target] = decode_prediction(pred, target)
     return recommendations
 
-# =========================
+
 # Flask Routes
-# =========================
+
 @app.route('/')
 def home():
     return jsonify({"message": "AI Fitness API is running!"})
@@ -68,14 +66,11 @@ def predict():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)})
 
-# =========================
+
 # Run Flask
-# =========================
-# if __name__ == "__main__":
-#     public_url = ngrok.connect(5000)
-#     print("Public URL:", public_url)
-#     from app import app  # or just use your Flask instance directly
-#     app.run(port=5000)
+
 
 if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=10000)
+    public_url = ngrok.connect(10000)
+    print("Public URL:", public_url)
+    app.run(host="0.0.0.0", port=10000)
